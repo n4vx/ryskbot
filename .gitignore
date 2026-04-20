@@ -1,0 +1,20 @@
+node_modules/
+.vercel/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+dist/
+
+# Agent session state (may contain transcripts / secrets)
+.omc/
+
+# Yarn Berry runtime — reproduced from yarn.lock
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
