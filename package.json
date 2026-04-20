@@ -11,7 +11,7 @@
     "set-webhook": "tsx scripts/set-webhook.ts",
     "check-redis": "tsx scripts/check-redis.ts",
     "smoke": "tsx scripts/smoke.ts",
-    "backfill": "tsx scripts/backfill.ts"
+    "set-commands": "tsx scripts/set-commands.ts"
   },
   "dependencies": {
     "@upstash/redis": "^1.34.3",

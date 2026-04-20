@@ -5,6 +5,7 @@ import { allTrackedAddresses, chatsForAddress, markNotifiedOnce } from "../lib/r
 import { listPositions } from "../lib/rysk.js";
 import { loadState, saveState } from "../lib/positionsState.js";
 import { formatExpiryAlert, formatPreExpiryAlert } from "../lib/format.js";
+import { sendSticker } from "../lib/stickers.js";
 
 export const config = { runtime: "edge" };
 
@@ -57,10 +58,12 @@ async function run(req: Request): Promise<Response> {
 
         // Expired.
         if (delta <= 0) {
+          const alert = await formatExpiryAlert(p);
           for (const chatId of chatIds) {
             const first = await markNotifiedOnce(chatId, address, p.optionId);
             if (!first) continue;
-            await bot().api.sendMessage(chatId, await formatExpiryAlert(p));
+            await bot().api.sendMessage(chatId, alert.text);
+            if (alert.sticker) await sendSticker(chatId, alert.sticker);
             notified++;
           }
         }

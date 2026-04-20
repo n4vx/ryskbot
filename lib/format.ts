@@ -22,7 +22,8 @@ function timeUntil(unix: number): string {
 }
 
 function formatUsd(n: number): string {
-  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: n < 10 ? 4 : 2 });
+  const maxDp = n < 10 ? 4 : n < 1000 ? 2 : 0;
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: maxDp });
 }
 
 function formatAmount(n: number, maxDp = 6): string {
@@ -70,32 +71,81 @@ export async function formatPositions(positions: RyskPosition[]): Promise<string
       const sizeUnits = Number(formatUnits(p.size, OTOKEN_DECIMALS));
       const strike = Number(formatUnits(p.strike, STRIKE_DECIMALS));
       const spot = prices.get(m.symbol) ?? null;
-
-      const lines = [
-        `${labelFor(p)} · ${formatAmount(sizeUnits)} ${m.symbol} @ ${formatUsd(strike)}`,
-        `  Expires: ${formatExpiry(p.expiry)} (in ${timeUntil(p.expiry)})`,
-      ];
-      if (spot !== null) lines.push(`  Spot: ${formatUsd(spot)}`);
-      lines.push(`  Outcome: ${outcomeText(p, m.symbol, sizeUnits, spot, strike)}`);
-      return lines.join("\n");
+      return formatPositionBlock(p, m.symbol, sizeUnits, strike, spot);
     })
     .join("\n\n");
 }
 
-export async function formatExpiryAlert(p: RyskPosition): Promise<string> {
+function formatPositionBlock(
+  p: RyskPosition,
+  symbol: string,
+  sizeUnits: number,
+  strike: number,
+  spot: number | null,
+): string {
+  const now = Math.floor(Date.now() / 1000);
+  const expired = p.expiry <= now;
+  const timeLine = expired
+    ? `Expired · ${formatExpiry(p.expiry)}`
+    : `${timeUntil(p.expiry)} to expiry · ${formatExpiry(p.expiry)}`;
+  const outcome = outcomeText(p, symbol, sizeUnits, spot, strike);
+  const outcomeLine = spot !== null ? `Spot ${formatUsd(spot)} → ${outcome}` : outcome;
+  return [
+    `${labelFor(p)} · ${formatAmount(sizeUnits)} ${symbol} @ ${formatUsd(strike)}`,
+    timeLine,
+    outcomeLine,
+  ].join("\n");
+}
+
+// file_unique_ids from the RyskItAll public sticker set (resolved at runtime)
+const STICKER_OTM = "AgADIScAAmqSGFA";
+const STICKER_ITM = "AgADwBoAAqHDOVA";
+
+const STICKERS_TRACK = [
+  "AgADBxgAAnJ5iVE", // 🐈 cat (meme)
+  "AgADKxwAAoBCYFE", // 🤑 money face
+  "AgADkBgAAsEXqVE", // 😎 sunglasses
+];
+
+const STICKERS_COVERED_CALL_STATUS = [
+  "AgAD3hcAAnmGYVI", // RYSK HUH cat
+];
+
+function pick<T>(xs: readonly T[]): T {
+  return xs[Math.floor(Math.random() * xs.length)]!;
+}
+
+export function pickTrackSticker(): string {
+  return pick(STICKERS_TRACK);
+}
+
+export function pickCoveredCallStatusSticker(): string {
+  return pick(STICKERS_COVERED_CALL_STATUS);
+}
+
+function isOtm(p: RyskPosition, spot: number, strike: number): boolean {
+  return p.isPut ? spot >= strike : spot <= strike;
+}
+
+export async function formatExpiryAlert(
+  p: RyskPosition,
+): Promise<{ text: string; sticker?: string }> {
   const meta = await loadTokenMeta([p.underlying]);
   const m = meta.get(p.underlying) ?? { symbol: "?", decimals: 18 };
   const sizeUnits = Number(formatUnits(p.size, OTOKEN_DECIMALS));
   const strike = Number(formatUnits(p.strike, STRIKE_DECIMALS));
+  const spot = m.symbol === "?" ? null : await getPriceUsd(m.symbol);
 
-  return [
-    `${labelFor(p)} expired`,
+  const text = [
+    `⏰ Position expired`,
     ``,
-    `${formatAmount(sizeUnits)} ${m.symbol} @ ${formatUsd(strike)}`,
-    `Expiry: ${formatExpiry(p.expiry)}`,
+    formatPositionBlock(p, m.symbol, sizeUnits, strike, spot),
     ``,
-    `Rysk settles automatically — check your collateral at https://app.rysk.finance/`,
+    `Rysk settles automatically — app.rysk.finance`,
   ].join("\n");
+
+  const sticker = spot === null ? undefined : isOtm(p, spot, strike) ? STICKER_OTM : STICKER_ITM;
+  return { text, sticker };
 }
 
 export async function formatPreExpiryAlert(p: RyskPosition): Promise<string> {
@@ -103,11 +153,11 @@ export async function formatPreExpiryAlert(p: RyskPosition): Promise<string> {
   const m = meta.get(p.underlying) ?? { symbol: "?", decimals: 18 };
   const sizeUnits = Number(formatUnits(p.size, OTOKEN_DECIMALS));
   const strike = Number(formatUnits(p.strike, STRIKE_DECIMALS));
+  const spot = m.symbol === "?" ? null : await getPriceUsd(m.symbol);
 
   return [
-    `${labelFor(p)} expires in <24h`,
+    `⚠️ Expires in under 24h`,
     ``,
-    `${formatAmount(sizeUnits)} ${m.symbol} @ ${formatUsd(strike)}`,
-    `Expiry: ${formatExpiry(p.expiry)} (in ${timeUntil(p.expiry)})`,
+    formatPositionBlock(p, m.symbol, sizeUnits, strike, spot),
   ].join("\n");
 }
