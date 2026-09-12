@@ -12,7 +12,7 @@ Public repo: https://github.com/n4vx/ryskbot
 - **Language**: TypeScript (Yarn Berry, ESM, `"type": "module"`). Use `.js` extensions in imports.
 - **Telegram**: grammy, webhook-based (`/api/telegram`), not long-polling.
 - **Storage**: Upstash Redis (REST, not TCP — Edge can't hold connections). `@upstash/redis`.
-- **Chain**: HyperEVM (chain id 999), public RPC `https://rpc.hyperliquid.xyz/evm`. Rate-limited; keep serial.
+- **Chain**: HyperEVM (chain id 999), public RPC `https://rpc.hyperliquid.xyz/evm`. Slow (~250ms/call) and rate-limited. Batch reads through Multicall3 (`0xcA11bde05977b3631167028862bE2a173976CA11`, deployed on 999) — never loop per-vault RPC calls.
 - **Prices**: Hyperliquid `POST https://api.hyperliquid.xyz/info {type:"allMids"}`. Symbol map: `WHYPE→HYPE`, `U<X>→<X>` (UBTC→BTC), else passthrough.
 - **Scheduler**: external (cron-job.org hits `/api/cron` every 30 min with `Authorization: Bearer $CRON_SECRET`). Vercel Hobby cron only runs daily — don't rely on it.
 
@@ -49,6 +49,7 @@ we recovered them from the `RyskHype` proxy's storage slots. Don't trust
 - **Addresses**: viem applies EIP-1191 chain-specific checksum on chain 999 returns; plain EIP-55 `getAddress()` then rejects. Always store addresses **lowercased** (`x.toLowerCase() as Address`) — viem accepts lowercase at call sites.
 - **Telegram sticker file_id is bot-scoped.** A file_id obtained via `@ShowJSONBot` won't work from our bot. We resolve at runtime via `bot.api.getStickerSet("RyskItAll")` and look up by `file_unique_id` (globally stable). See `lib/stickers.ts`.
 - **Opyn decimals**: oToken `balanceOf` and `shortAmounts` use **8 decimals** regardless of the underlying. Strike prices also use **8 decimals**.
+- **Vercel Edge kills the request at 25s** if no response has started. `api/cron.ts` has a 20s budget and skips remaining wallets past it. Before Multicall3 (Sep 2026) a single 76-vault wallet took ~20s serially, the cron 504'd every run from ~Aug 28, and no alerts fired for anyone — reported as "puts don't notify". cron-job.org auto-disables jobs that keep failing, so after an outage check the job is still enabled.
 - **HyperEVM RPC** caps `eth_getLogs` at 1000 blocks per call. We don't use logs; kept here so nobody tries.
 - **Post-expiry settlement**: Rysk's keeper may remove the short from the vault shortly after expiry. Cron snapshots last-seen state in `state:<addr>` so alerts still fire even after settlement removes the position. See `lib/positionsState.ts`.
 

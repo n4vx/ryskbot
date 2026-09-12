@@ -72,9 +72,42 @@ export function isLikelyAddress(s: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(s.trim());
 }
 
+const MULTICALL3: Address = "0xca11bde05977b3631167028862be2a173976ca11";
+const ZERO: Address = "0x0000000000000000000000000000000000000000";
+const MULTICALL_CHUNK = 40;
+
+async function multicallChunked<T>(
+  client: ReturnType<typeof rpc>,
+  contracts: readonly unknown[],
+): Promise<Array<{ status: "success"; result: T } | { status: "failure"; error: Error }>> {
+  const out: Array<{ status: "success"; result: T } | { status: "failure"; error: Error }> = [];
+  for (let i = 0; i < contracts.length; i += MULTICALL_CHUNK) {
+    const chunk = contracts.slice(i, i + MULTICALL_CHUNK);
+    const res = await client.multicall({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      contracts: chunk as any,
+      multicallAddress: MULTICALL3,
+      allowFailure: true,
+    });
+    out.push(...(res as Array<{ status: "success"; result: T } | { status: "failure"; error: Error }>));
+  }
+  return out;
+}
+
+type Vault = {
+  shortOtokens: readonly Address[];
+  shortAmounts: readonly bigint[];
+};
+
+type OtokenDetails = readonly [Address, Address, Address, bigint, bigint, boolean];
+
 /**
  * Lists a user's short option positions by enumerating their Gamma vaults.
  * Pure on-chain read, user-specific — no global scanning.
+ *
+ * Uses Multicall3 so a wallet with N vaults costs ~3 RPC round-trips instead
+ * of N+M. The public HyperEVM RPC is slow (~250ms/call) and Vercel Edge kills
+ * the cron at 25s, so serial per-vault reads don't scale past a few wallets.
  */
 export async function listPositions(
   account: Address,
@@ -90,41 +123,64 @@ export async function listPositions(
     functionName: "getAccountVaultCounter",
     args: [account],
   });
+  if (vaultCount === 0n) return positions;
 
+  // 1) All vaults in a few batched calls.
+  const vaultCalls = [];
   for (let i = 1n; i <= vaultCount; i++) {
-    const vault = await client.readContract({
+    vaultCalls.push({
       address: CONTRACTS.controller,
       abi: controllerAbi,
       functionName: "getVault",
       args: [account, i],
     });
+  }
+  const vaults = await multicallChunked<Vault>(client, vaultCalls);
 
-    for (let j = 0; j < vault.shortOtokens.length; j++) {
-      const oToken = vault.shortOtokens[j];
-      const amount = vault.shortAmounts[j];
-      if (!oToken || oToken === "0x0000000000000000000000000000000000000000" || !amount || amount === 0n) continue;
-
-      const d = await client.readContract({
-        address: lc(oToken),
-        abi: otokenAbi,
-        functionName: "getOtokenDetails",
-      });
-      const expiry = Number(d[4]);
-      if (expiry <= now - activeWindowSeconds) continue;
-
-      positions.push({
-        optionId: `${oToken.toLowerCase()}:short:${i.toString()}`,
-        oToken: lc(oToken),
-        side: "short",
-        strike: d[3],
-        expiry,
-        isPut: d[5],
-        size: amount,
-        underlying: lc(d[1]),
-        collateral: lc(d[0]),
-        vaultId: Number(i),
-      });
+  // 2) Collect live shorts, then fetch each distinct oToken's details once.
+  type Short = { vaultId: bigint; oToken: Address; amount: bigint };
+  const shorts: Short[] = [];
+  vaults.forEach((v, idx) => {
+    if (v.status !== "success") return;
+    const vaultId = BigInt(idx + 1);
+    for (let j = 0; j < v.result.shortOtokens.length; j++) {
+      const oToken = v.result.shortOtokens[j];
+      const amount = v.result.shortAmounts[j];
+      if (!oToken || oToken === ZERO || !amount || amount === 0n) continue;
+      shorts.push({ vaultId, oToken: lc(oToken), amount });
     }
+  });
+  if (shorts.length === 0) return positions;
+
+  const uniqueOtokens = Array.from(new Set(shorts.map((s) => s.oToken)));
+  const detailResults = await multicallChunked<OtokenDetails>(
+    client,
+    uniqueOtokens.map((address) => ({ address, abi: otokenAbi, functionName: "getOtokenDetails" })),
+  );
+  const details = new Map<Address, OtokenDetails>();
+  uniqueOtokens.forEach((addr, i) => {
+    const r = detailResults[i];
+    if (r && r.status === "success") details.set(addr, r.result);
+  });
+
+  for (const s of shorts) {
+    const d = details.get(s.oToken);
+    if (!d) continue;
+    const expiry = Number(d[4]);
+    if (expiry <= now - activeWindowSeconds) continue;
+
+    positions.push({
+      optionId: `${s.oToken}:short:${s.vaultId.toString()}`,
+      oToken: s.oToken,
+      side: "short",
+      strike: d[3],
+      expiry,
+      isPut: d[5],
+      size: s.amount,
+      underlying: lc(d[1]),
+      collateral: lc(d[0]),
+      vaultId: Number(s.vaultId),
+    });
   }
 
   return positions;
